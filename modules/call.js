@@ -4,14 +4,10 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { authenticateUser } from './auth.js';
-import { MeetingControls } from './meetingControls.js';
 
 // Fix for __dirname in ES modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-
-// Initialize meeting controls
-const meetingControls = new MeetingControls();
 
 // Meeting class to manage meeting state
 class Meeting {
@@ -30,7 +26,7 @@ class Meeting {
     this.iceServers = this.getICEServers();
     this.isLocked = false;
     
-    // Meeting controls
+    // Meeting controls - default all enabled
     this.controls = {
       chatEnabled: true,
       fileShareEnabled: true,
@@ -397,9 +393,6 @@ export const setupSocketIO = (server) => {
       
       participants.set(socket.id, { meetingId, isHost: true });
       
-      // Initialize meeting controls
-      meetingControls.initializeMeeting(meetingId, socket.id);
-      
       socket.emit('joined-meeting', {
         meetingId,
         isHost: true,
@@ -489,7 +482,7 @@ export const setupSocketIO = (server) => {
       const meeting = meetings.get(participantInfo.meetingId);
       if (!meeting) return;
 
-      // Check if chat is enabled
+      // Check if chat is enabled (hosts can always send messages)
       if (!meeting.controls.chatEnabled && !meeting.canPerformHostAction(socket.id)) {
         socket.emit('action-error', { message: 'Chat has been disabled by the host' });
         return;
@@ -516,7 +509,7 @@ export const setupSocketIO = (server) => {
       const meeting = meetings.get(participantInfo.meetingId);
       if (!meeting) return;
 
-      // Check if file sharing is enabled
+      // Check if file sharing is enabled (hosts can always share files)
       if (!meeting.controls.fileShareEnabled && !meeting.canPerformHostAction(socket.id)) {
         socket.emit('action-error', { message: 'File sharing has been disabled by the host' });
         return;
@@ -535,33 +528,6 @@ export const setupSocketIO = (server) => {
         fileSize: data.fileSize,
         timestamp: new Date().toISOString()
       });
-    });
-
-    // Emoji reaction with control check
-    socket.on('send-reaction', (data) => {
-      const participantInfo = participants.get(socket.id);
-      if (!participantInfo) return;
-
-      const meeting = meetings.get(participantInfo.meetingId);
-      if (!meeting) return;
-
-      // Check if emoji reactions are enabled
-      if (!meeting.controls.emojiReactionsEnabled && !meeting.canPerformHostAction(socket.id)) {
-        socket.emit('action-error', { message: 'Emoji reactions have been disabled by the host' });
-        return;
-      }
-
-      const participant = meeting.participants.get(socket.id);
-      if (!participant) return;
-
-      io.to(participantInfo.meetingId).emit('reaction-received', {
-        emoji: data.emoji,
-        participantName: participant.name,
-        socketId: socket.id,
-        timestamp: data.timestamp
-      });
-
-      console.log(`Reaction ${data.emoji} sent by ${participant.name} in meeting ${participantInfo.meetingId}`);
     });
 
     // New socket event for locking/unlocking meeting
@@ -697,6 +663,32 @@ export const setupSocketIO = (server) => {
           reason: 'audio-activity'
         });
       }
+    });
+
+    socket.on('send-reaction', (data) => {
+      const participantInfo = participants.get(socket.id);
+      if (!participantInfo) return;
+
+      const meeting = meetings.get(participantInfo.meetingId);
+      if (!meeting) return;
+
+      // Check if emoji reactions are enabled (hosts can always send reactions)
+      if (!meeting.controls.emojiReactionsEnabled && !meeting.canPerformHostAction(socket.id)) {
+        socket.emit('action-error', { message: 'Emoji reactions have been disabled by the host' });
+        return;
+      }
+
+      const participant = meeting.participants.get(socket.id);
+      if (!participant) return;
+
+      io.to(participantInfo.meetingId).emit('reaction-received', {
+        emoji: data.emoji,
+        participantName: participant.name,
+        socketId: socket.id,
+        timestamp: data.timestamp
+      });
+
+      console.log(`Reaction ${data.emoji} sent by ${participant.name} in meeting ${participantInfo.meetingId}`);
     });
 
     socket.on('raise-hand', () => {
@@ -980,7 +972,6 @@ export const setupSocketIO = (server) => {
             socket.to(participantInfo.meetingId).emit('meeting-ended');
             
             meetings.delete(participantInfo.meetingId);
-            meetingControls.removeMeeting(participantInfo.meetingId);
             
             console.log(`Meeting ${participantInfo.meetingId} ended - host disconnected`);
           } else {
