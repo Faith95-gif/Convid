@@ -4,10 +4,14 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { authenticateUser } from './auth.js';
+import { MeetingControls } from './meetingControls.js';
 
 // Fix for __dirname in ES modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+// Initialize meeting controls
+const meetingControls = new MeetingControls();
 
 // Meeting class to manage meeting state
 class Meeting {
@@ -24,7 +28,14 @@ class Meeting {
     this.manualSpotlight = false;
     this.raisedHands = new Set();
     this.iceServers = this.getICEServers();
-    this.isLocked = false; // New property for meeting lock status
+    this.isLocked = false;
+    
+    // Meeting controls
+    this.controls = {
+      chatEnabled: true,
+      fileShareEnabled: true,
+      emojiReactionsEnabled: true
+    };
   }
 
   getICEServers() {
@@ -253,6 +264,15 @@ class Meeting {
     // Allow if meeting is not locked or if participant is already in the meeting
     return !this.isLocked || this.participants.has(socketId);
   }
+
+  // Meeting controls methods
+  updateControls(newControls) {
+    this.controls = { ...this.controls, ...newControls };
+  }
+
+  getControls() {
+    return this.controls;
+  }
 }
 
 // Store meeting data
@@ -313,7 +333,8 @@ export const setupSocketIO = (server) => {
         hostName: meeting.hostName,
         participantCount: meeting.participants.size,
         createdAt: meeting.createdAt,
-        isLocked: meeting.isLocked
+        isLocked: meeting.isLocked,
+        controls: meeting.getControls()
       });
     });
 
@@ -376,6 +397,9 @@ export const setupSocketIO = (server) => {
       
       participants.set(socket.id, { meetingId, isHost: true });
       
+      // Initialize meeting controls
+      meetingControls.initializeMeeting(meetingId, socket.id);
+      
       socket.emit('joined-meeting', {
         meetingId,
         isHost: true,
@@ -383,7 +407,8 @@ export const setupSocketIO = (server) => {
         spotlightedParticipant: meeting.spotlightedParticipant,
         raisedHands: meeting.getRaisedHands(),
         iceServers: meeting.iceServers,
-        isLocked: meeting.isLocked
+        isLocked: meeting.isLocked,
+        controls: meeting.getControls()
       });
 
       console.log(`Host ${hostName} created meeting ${meetingId}`);
@@ -421,7 +446,8 @@ export const setupSocketIO = (server) => {
         screenShares: Array.from(meeting.screenShares.entries()),
         raisedHands: meeting.getRaisedHands(),
         iceServers: meeting.iceServers,
-        isLocked: meeting.isLocked
+        isLocked: meeting.isLocked,
+        controls: meeting.getControls()
       });
 
       socket.to(meetingId).emit('participant-joined', {
@@ -430,6 +456,112 @@ export const setupSocketIO = (server) => {
       });
 
       console.log(`Participant ${participantName} joined meeting ${meetingId}`);
+    });
+
+    // Meeting controls socket events
+    socket.on('update-meeting-controls', (data) => {
+      const participantInfo = participants.get(socket.id);
+      if (!participantInfo) return;
+      
+      const meeting = meetings.get(participantInfo.meetingId);
+      if (!meeting || !meeting.canPerformHostAction(socket.id)) {
+        socket.emit('action-error', { message: 'Only host can update meeting controls' });
+        return;
+      }
+
+      // Update meeting controls
+      meeting.updateControls(data.controls);
+      
+      // Notify all participants about the control changes
+      io.to(participantInfo.meetingId).emit('meeting-controls-updated', {
+        controls: meeting.getControls(),
+        updatedBy: meeting.participants.get(socket.id)?.name
+      });
+
+      console.log(`Meeting controls updated in ${participantInfo.meetingId}:`, data.controls);
+    });
+
+    // Chat message with control check
+    socket.on('send-chat-message', (data) => {
+      const participantInfo = participants.get(socket.id);
+      if (!participantInfo) return;
+      
+      const meeting = meetings.get(participantInfo.meetingId);
+      if (!meeting) return;
+
+      // Check if chat is enabled
+      if (!meeting.controls.chatEnabled && !meeting.canPerformHostAction(socket.id)) {
+        socket.emit('action-error', { message: 'Chat has been disabled by the host' });
+        return;
+      }
+
+      const participant = meeting.participants.get(socket.id);
+      if (!participant) return;
+
+      // Broadcast chat message
+      io.to(participantInfo.meetingId).emit('chat-message-received', {
+        id: data.id || Date.now(),
+        from: participant.name,
+        fromSocketId: socket.id,
+        message: data.message,
+        timestamp: new Date().toISOString()
+      });
+    });
+
+    // File share with control check
+    socket.on('share-file', (data) => {
+      const participantInfo = participants.get(socket.id);
+      if (!participantInfo) return;
+      
+      const meeting = meetings.get(participantInfo.meetingId);
+      if (!meeting) return;
+
+      // Check if file sharing is enabled
+      if (!meeting.controls.fileShareEnabled && !meeting.canPerformHostAction(socket.id)) {
+        socket.emit('action-error', { message: 'File sharing has been disabled by the host' });
+        return;
+      }
+
+      const participant = meeting.participants.get(socket.id);
+      if (!participant) return;
+
+      // Broadcast file share
+      io.to(participantInfo.meetingId).emit('file-shared', {
+        id: data.id || Date.now(),
+        from: participant.name,
+        fromSocketId: socket.id,
+        fileName: data.fileName,
+        fileUrl: data.fileUrl,
+        fileSize: data.fileSize,
+        timestamp: new Date().toISOString()
+      });
+    });
+
+    // Emoji reaction with control check
+    socket.on('send-reaction', (data) => {
+      const participantInfo = participants.get(socket.id);
+      if (!participantInfo) return;
+
+      const meeting = meetings.get(participantInfo.meetingId);
+      if (!meeting) return;
+
+      // Check if emoji reactions are enabled
+      if (!meeting.controls.emojiReactionsEnabled && !meeting.canPerformHostAction(socket.id)) {
+        socket.emit('action-error', { message: 'Emoji reactions have been disabled by the host' });
+        return;
+      }
+
+      const participant = meeting.participants.get(socket.id);
+      if (!participant) return;
+
+      io.to(participantInfo.meetingId).emit('reaction-received', {
+        emoji: data.emoji,
+        participantName: participant.name,
+        socketId: socket.id,
+        timestamp: data.timestamp
+      });
+
+      console.log(`Reaction ${data.emoji} sent by ${participant.name} in meeting ${participantInfo.meetingId}`);
     });
 
     // New socket event for locking/unlocking meeting
@@ -565,26 +697,6 @@ export const setupSocketIO = (server) => {
           reason: 'audio-activity'
         });
       }
-    });
-
-    socket.on('send-reaction', (data) => {
-      const participantInfo = participants.get(socket.id);
-      if (!participantInfo) return;
-
-      const meeting = meetings.get(participantInfo.meetingId);
-      if (!meeting) return;
-
-      const participant = meeting.participants.get(socket.id);
-      if (!participant) return;
-
-      io.to(participantInfo.meetingId).emit('reaction-received', {
-        emoji: data.emoji,
-        participantName: participant.name,
-        socketId: socket.id,
-        timestamp: data.timestamp
-      });
-
-      console.log(`Reaction ${data.emoji} sent by ${participant.name} in meeting ${participantInfo.meetingId}`);
     });
 
     socket.on('raise-hand', () => {
@@ -868,6 +980,7 @@ export const setupSocketIO = (server) => {
             socket.to(participantInfo.meetingId).emit('meeting-ended');
             
             meetings.delete(participantInfo.meetingId);
+            meetingControls.removeMeeting(participantInfo.meetingId);
             
             console.log(`Meeting ${participantInfo.meetingId} ended - host disconnected`);
           } else {

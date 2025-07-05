@@ -1,5 +1,4 @@
-
-      class WebRTCManager {
+class WebRTCManager {
         constructor(socket) {
           this.socket = socket;
           this.localStream = null;
@@ -411,6 +410,11 @@
           this.participantsPanelOpen = false;
           this.searchTerm = '';
           this.reactionManager = null;
+          this.meetingControls = {
+            chatEnabled: true,
+            fileShareEnabled: true,
+            emojiReactionsEnabled: true
+          };
           
         this.init().then(() => {
   // Store global references after initialization
@@ -481,6 +485,12 @@
             this.updateParticipants(data.participants);
             this.updateMeetingTitle();
             this.updateRaisedHands(data.raisedHands);
+            
+            // Update meeting controls if provided
+            if (data.controls) {
+              this.meetingControls = data.controls;
+              this.updateControlsUI();
+            }
           });
 
           this.socket.on('participant-joined', (data) => {
@@ -548,6 +558,14 @@
             if (this.reactionManager) {
               this.reactionManager.updateHandRaised(data.socketId, data.participantName, false);
             }
+          });
+
+          // Meeting controls events
+          this.socket.on('meeting-controls-updated', (data) => {
+            console.log('Meeting controls updated:', data);
+            this.meetingControls = data.controls;
+            this.updateControlsUI();
+            this.showToast(`Meeting controls updated by ${data.updatedBy}`);
           });
         }
 
@@ -618,6 +636,73 @@
               this.closeParticipantsPanel();
             }
           });
+
+          // Meeting controls event listeners
+          this.setupMeetingControlsListeners();
+        }
+
+        setupMeetingControlsListeners() {
+          // Chat control
+          const chatToggle = document.querySelector('#chat .toggle input[type="checkbox"]');
+          if (chatToggle) {
+            chatToggle.addEventListener('change', (e) => {
+              this.updateMeetingControl('chatEnabled', e.target.checked);
+            });
+          }
+
+          // File sharing control
+          const fileShareToggle = document.querySelector('#chat .setting-item:nth-child(3) .toggle input[type="checkbox"]');
+          if (fileShareToggle) {
+            fileShareToggle.addEventListener('change', (e) => {
+              this.updateMeetingControl('fileShareEnabled', e.target.checked);
+            });
+          }
+
+          // Emoji reactions control
+          const emojiToggle = document.querySelector('#chat .setting-item:nth-child(4) .toggle input[type="checkbox"]');
+          if (emojiToggle) {
+            emojiToggle.addEventListener('change', (e) => {
+              this.updateMeetingControl('emojiReactionsEnabled', e.target.checked);
+            });
+          }
+        }
+
+        updateMeetingControl(controlName, value) {
+          this.meetingControls[controlName] = value;
+          
+          // Send update to server
+          this.socket.emit('update-meeting-controls', {
+            controls: this.meetingControls
+          });
+
+          // Show feedback
+          const controlNames = {
+            chatEnabled: 'Chat',
+            fileShareEnabled: 'File Sharing',
+            emojiReactionsEnabled: 'Emoji Reactions'
+          };
+          
+          this.showToast(`${controlNames[controlName]} ${value ? 'enabled' : 'disabled'} for all participants`);
+        }
+
+        updateControlsUI() {
+          // Update chat toggle
+          const chatToggle = document.querySelector('#chat .toggle input[type="checkbox"]');
+          if (chatToggle) {
+            chatToggle.checked = this.meetingControls.chatEnabled;
+          }
+
+          // Update file sharing toggle
+          const fileShareToggle = document.querySelector('#chat .setting-item:nth-child(3) .toggle input[type="checkbox"]');
+          if (fileShareToggle) {
+            fileShareToggle.checked = this.meetingControls.fileShareEnabled;
+          }
+
+          // Update emoji reactions toggle
+          const emojiToggle = document.querySelector('#chat .setting-item:nth-child(4) .toggle input[type="checkbox"]');
+          if (emojiToggle) {
+            emojiToggle.checked = this.meetingControls.emojiReactionsEnabled;
+          }
         }
 
         updateRaisedHands(raisedHands) {
